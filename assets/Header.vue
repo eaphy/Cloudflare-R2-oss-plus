@@ -104,7 +104,7 @@ onUnmounted(() => {
             <path d="M20 24v12M14 30l6 6 6-6" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
           </g>
         </svg>
-        <span>StaroDrive</span>
+        <span>R2-Drive</span>
       </div>
 
       <!-- Left Spacer -->

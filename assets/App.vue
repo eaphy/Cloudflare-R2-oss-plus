@@ -1327,7 +1327,7 @@ export default {
         }
         document.title = `${
           this.cwd.replace(/.*\/(?!$)|\//g, "") || "/"
-        } - StaroDrive`;
+        } | R2-Drive`;
       },
       immediate: true,
     },

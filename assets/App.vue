@@ -1327,7 +1327,7 @@ export default {
         }
         document.title = `${
           this.cwd.replace(/.*\/(?!$)|\//g, "") || "/"
-        } | R2-Drive`;
+        } | R2`;
       },
       immediate: true,
     },

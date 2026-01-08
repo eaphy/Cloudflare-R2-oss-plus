@@ -23,9 +23,11 @@
   - [CDN 回源配置](#cdn-回源配置可选)
 - [使用指南](#-使用指南)
   - [分享管理](#分享管理管理员功能)
+  - [API Key 管理](#api-key-管理管理员功能)
 - [本地开发](#-本地开发)
 - [项目结构](#-项目结构)
 - [常见问题](#-常见问题)
+- [更新日志](#-更新日志)
 - [注意事项](#️-注意事项)
 - [免责声明](#-免责声明)
 - [开源协议](#-开源协议)
@@ -42,6 +44,7 @@
 | 📂 **文件夹支持** | 创建文件夹、文件夹重命名、文件夹下载（打包ZIP） |
 | 🔍 **高级搜索** | 支持文件名、类型、扩展名、大小多维度搜索 |
 | 🖼️ **缩略图预览** | 图片和视频自动生成缩略图 |
+| 👁️ **文件预览** | 支持 PDF、Excel、Word、Markdown、代码等格式在线预览 |
 | 📱 **响应式设计** | 完美支持 PC 和移动端 |
 | 📤 **大文件上传** | 支持最大 5GB 文件（分片上传） |
 
@@ -77,7 +80,9 @@
 | 🔐 **目录授权** | 为不同用户分配不同目录权限 |
 | 👁️ **只读用户** | 支持只能查看和下载的只读账户 |
 | 👥 **访客模式** | 可配置访客可访问的目录（仅查看） |
+| 🔑 **API Key** | 支持创建 API 密钥，用于程序化访问（如 PicGo 图床） |
 | 🎨 **现代化登录** | 自定义登录界面，非浏览器弹窗 |
+| 🛠️ **管理工具** | 管理员专属工具（清理孤立缩略图等） |
 
 ---
 
@@ -191,6 +196,11 @@
 | `FILE_BASE_URL` | ❌ | 前端文件访问 URL（CDN 回源场景） | `https://cdn.example.com` |
 | `GUEST` | ❌ | 访客可访问目录 | `public/` |
 | `GUEST_UPLOAD_PASSWORD` | ❌ | 访客上传密码 | `your_password` |
+| `S3_ENDPOINT` | ❌ | **S3 兼容后端**：Endpoint（配置后会切换到 S3 模式） | `https://s3.example.com` |
+| `S3_BUCKET` | ❌ | **S3 兼容后端**：Bucket 名称 | `my-bucket` |
+| `S3_REGION` | ❌ | **S3 兼容后端**：区域（AWS 常见如 `us-east-1`；R2 可用 `auto`） | `us-east-1` |
+| `S3_ACCESS_KEY_ID`/`AWS_ACCESS_KEY_ID` | ❌ | **S3 兼容后端**：AccessKeyId | - |
+| `S3_SECRET_ACCESS_KEY`/`AWS_SECRET_ACCESS_KEY` | ❌ | **S3 兼容后端**：SecretAccessKey | - |
 | `CF_ACCOUNT_ID` | ❌ | Cloudflare 账户 ID（操作统计需要） | `abc123...` |
 | `CF_API_TOKEN` | ❌ | API Token（操作统计需要） | `xxx...` |
 | `R2_BUCKET_NAME` | ❌ | 指定统计的存储桶名称 | `my-drive` |
@@ -206,6 +216,20 @@ PUBURL = https://pub-xxx.r2.dev
 ```
 
 获取方式：进入 R2 存储桶 → 设置 → 公开访问 → 复制公共存储桶 URL
+
+---
+
+## ✅ S3 兼容存储支持（新增）
+
+如果你希望把本项目当作“通用 S3 网盘/对象存储管理器”，可以通过环境变量切换到 **S3 模式**：
+
+1. 设置 `S3_ENDPOINT` + `S3_BUCKET`
+2. 设置凭据：`S3_ACCESS_KEY_ID`/`AWS_ACCESS_KEY_ID` 与 `S3_SECRET_ACCESS_KEY`/`AWS_SECRET_ACCESS_KEY`
+3. （推荐）设置 `S3_REGION`，避免 AWS 等服务因为 region 不匹配产生 301 跳转导致签名失效
+
+> 说明：
+> - 只要 `S3_ENDPOINT`、`S3_BUCKET` 与凭据齐全，后端会自动走 S3；此时 `BUCKET`/`PUBURL` 不再是核心必需（仍可保留用于 R2 模式或其他功能）。
+> - `/raw/...` 会走服务端签名直读，并对非缩略图响应设置 `Cache-Control: no-store`，避免“保存后仍看到旧内容”。
 
 #### FILE_BASE_URL（可选）
 
@@ -441,6 +465,30 @@ backup ext:pdf
 type:视频 size:10MB-500MB
 ```
 
+### 文件预览
+
+点击文件即可打开预览窗口，支持以下格式：
+
+| 类型 | 支持格式 | 说明 |
+|------|---------|------|
+| 图片 | jpg, png, gif, webp, svg, bmp, ico, avif | 支持缩放 |
+| 视频 | mp4, webm, ogg, mov, avi, mkv | 原生播放器 |
+| 音频 | mp3, wav, ogg, flac, m4a, aac | 原生播放器 |
+| PDF | pdf | 支持翻页、缩放 |
+| Excel | xlsx, xls, csv | 支持多工作表切换 |
+| Word | docx | 转换为 HTML 预览 |
+| Markdown | md, markdown | 支持语法高亮 |
+| 代码 | js, ts, py, java, go, rust 等 50+ 种 | 语法高亮 + 行号 |
+
+#### 预览快捷键
+| 快捷键 | 功能 |
+|--------|------|
+| `Esc` | 关闭预览 / 退出全屏 |
+| `←` `→` | PDF 翻页 |
+| `Ctrl` + `+` | 放大 |
+| `Ctrl` + `-` | 缩小 |
+| `Ctrl` + 滚轮 | 缩放 |
+
 ### 文件分享
 
 #### 创建分享
@@ -499,6 +547,119 @@ wget --content-disposition "https://your-domain.com/s/abc123/download?pwd=mypass
 | X天/小时后 | 灰色/黄色 | 即将过期 |
 | 已过期 | 红色 | 分享已失效 |
 
+### 管理工具（管理员功能）
+
+管理员可以使用管理工具进行系统维护。
+
+#### 打开管理工具
+1. 以管理员身份登录
+2. 点击顶部导航栏的用户头像
+3. 在下拉菜单中点击 **管理工具**
+
+#### 清理孤立缩略图
+
+当文件被删除或修改后，其对应的缩略图可能不再被引用，成为"孤立缩略图"。此工具可以扫描并清理这些无用的缩略图，释放存储空间。
+
+**使用步骤：**
+1. 打开管理工具后会自动开始扫描
+2. 查看扫描结果：
+   - 已扫描文件数
+   - 使用中缩略图数
+   - 总缩略图数
+   - 孤立缩略图数
+3. 如有孤立缩略图，点击 **清理** 按钮删除
+4. 清理完成后显示释放的空间大小
+
+> 💡 **提示**：缩略图使用内容哈希命名，相同内容的图片共享同一个缩略图，因此清理是安全的。
+
+### API Key 管理（管理员功能）
+
+API Key 允许第三方应用程序（如 PicGo 图床、备份脚本等）通过 API 访问你的网盘，无需使用用户名密码。
+
+#### 打开 API Key 管理
+1. 以管理员身份登录
+2. 点击顶部导航栏的用户头像
+3. 在下拉菜单中点击 **API Key**
+
+#### 创建 API Key
+1. 点击 **新建密钥** 按钮
+2. 填写密钥信息：
+   - **名称**：用于识别密钥用途（如"PicGo图床"、"备份脚本"）
+   - **权限**：选择"全部目录"或指定目录（多个目录用逗号分隔）
+   - **只读**：勾选后该密钥只能下载，不能上传/删除
+   - **有效期**：永久 / 7天 / 30天 / 90天 / 1年
+3. 点击 **创建**
+4. **立即复制**生成的密钥（关闭后无法再次查看！）
+
+#### API Key 使用方式
+
+支持两种认证方式：
+
+**方式一：Bearer Token（推荐）**
+```bash
+curl -X PUT "https://your-domain.com/api/write/items/images/photo.jpg" \
+  -H "Authorization: Bearer sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxx" \
+  -H "Content-Type: image/jpeg" \
+  --data-binary @photo.jpg
+```
+
+**方式二：X-API-Key 头**
+```bash
+curl -X PUT "https://your-domain.com/api/write/items/images/photo.jpg" \
+  -H "X-API-Key: sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxx" \
+  -H "Content-Type: image/jpeg" \
+  --data-binary @photo.jpg
+```
+
+#### PicGo 图床配置示例
+
+推荐使用 PicGo 的 **web-uploader** 或 **custom-uploader** 插件：
+
+| 配置项 | 值 | 说明 |
+|-------|-----|------|
+| **API 地址** | `https://your-domain.com/api/upload?path=images` | `path` 参数指定上传目录 |
+| **请求方式** | `POST` | |
+| **文件字段名** | `file` | |
+| **自定义请求头** | `{"Authorization": "Bearer sk-xxx"}` | 或 `{"X-API-Key": "sk-xxx"}` |
+| **JSON 路径** | `url` | 返回的图片 URL |
+
+**配置说明：**
+
+1. **API 地址**：`https://your-domain.com/api/upload?path=目录名`
+   - `path` 参数对应你创建 API Key 时设置的目录权限
+   - 例如权限设置为 `images`，则 `path=images`
+   - 如果权限是"全部目录"，`path` 可以是任意目录
+
+2. **请求头**：使用你创建的 API Key
+   ```json
+   {"Authorization": "Bearer sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}
+   ```
+
+3. **返回格式**：接口返回 JSON 格式
+   ```json
+   {
+     "success": true,
+     "url": "https://pub-xxx.r2.dev/images/photo.jpg",
+     "key": "images/photo.jpg",
+     "size": 12345
+   }
+   ```
+
+> ⚠️ **注意**：确保 API Key 的目录权限与 `path` 参数匹配，且未勾选"只读"选项。
+
+#### 管理 API Key
+- **启用/禁用**：临时禁用密钥而不删除
+- **编辑**：修改权限和只读设置
+- **删除**：永久删除密钥
+
+#### 密钥状态说明
+| 状态 | 说明 |
+|------|------|
+| 正常 | 密钥可正常使用 |
+| 已禁用 | 密钥被管理员禁用 |
+| 已过期 | 密钥已超过有效期 |
+| 只读 | 密钥只能下载，不能上传/删除 |
+
 ---
 
 ## 🔧 本地开发
@@ -553,6 +714,9 @@ Cloudflare-R2-oss/
 │   ├── LoginDialog.vue    # 登录对话框
 │   ├── ShareDialog.vue    # 分享对话框
 │   ├── ShareListDialog.vue # 分享列表对话框
+│   ├── AdminTools.vue     # 管理工具对话框
+│   ├── ApiKeyDialog.vue   # API Key 管理对话框
+│   ├── FilePreview.vue    # 文件预览组件
 │   ├── InputDialog.vue    # 输入对话框
 │   ├── ConfirmDialog.vue  # 确认对话框
 │   ├── Toast.vue          # 消息提示组件
@@ -569,6 +733,8 @@ Cloudflare-R2-oss/
 │   │   ├── auth.ts        # 认证 API
 │   │   ├── config.ts      # 配置 API
 │   │   ├── stats.ts       # 统计 API
+│   │   ├── cleanup-thumbnails.ts # 缩略图清理 API
+│   │   ├── apikeys/       # API Key 管理 API
 │   │   ├── children/      # 文件列表 API
 │   │   ├── share/         # 分享管理 API
 │   │   └── write/         # 文件操作 API
@@ -577,6 +743,7 @@ Cloudflare-R2-oss/
 │       └── [id].ts        # 分享详情页
 ├── utils/                  # 工具函数
 │   ├── auth.ts            # 权限验证
+│   ├── apikey.ts          # API Key 工具函数
 │   └── share.ts           # 分享工具
 ├── docs/                   # 文档资源
 │   └── images/            # 截图图片
@@ -690,6 +857,19 @@ Cloudflare-R2-oss/
 **建议：** 如果经常需要重命名文件夹，建议在创建时就想好名字，避免后续大量文件的复制操作。对于包含大量文件的文件夹，重命名的成本较高（耗时 + R2 操作次数计费）。
 
 </details>
+
+---
+
+## 📋 更新日志
+
+查看完整的更新历史和版本变更，请参阅 [CHANGELOG.md](CHANGELOG.md)。
+
+### 最近更新
+
+- **API Key 管理**：支持创建 API 密钥用于程序化访问，可配置权限和有效期
+- **文件预览**：支持 PDF、Excel、Word、Markdown、代码等格式在线预览
+- **管理工具**：新增孤立缩略图清理功能
+- **Bug 修复**：修复缩略图 Content-Type、CORS 跨域、权限验证等问题
 
 ---
 

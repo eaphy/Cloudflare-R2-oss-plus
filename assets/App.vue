@@ -16,6 +16,8 @@
       @login="showLoginDialog = true"
       @logout="handleLogout"
       @showShareList="showShareListDialog = true"
+      @showAdminTools="showAdminTools = true"
+      @showApiKeys="showApiKeyDialog = true"
     />
 
     <!-- Main Content -->
@@ -103,7 +105,7 @@
           :selected="isSelected(file.key)"
           :selectionMode="selectionMode"
           :fileBaseUrl="fileBaseUrl"
-          @click="preview(getFileUrl(file.key))"
+          @click="preview(file)"
           @select="toggleSelect(file.key)"
           @contextmenu="showContextMenuFor($event, file)"
         />
@@ -159,6 +161,18 @@
       @close="showShareListDialog = false"
       @toast="handleToast"
       @confirm="showConfirm"
+    />
+
+    <!-- Admin Tools Dialog -->
+    <AdminTools
+      v-model="showAdminTools"
+      @toast="handleToast"
+    />
+
+    <!-- API Key Dialog -->
+    <ApiKeyDialog
+      v-model="showApiKeyDialog"
+      @toast="handleToast"
     />
 
     <!-- Input Dialog -->
@@ -236,6 +250,13 @@
             </svg>
             重命名
           </button>
+          <button class="context-menu-item" @click="editFocusedMarkdown" v-if="!isReadonly && isMarkdownFile(focusedItem)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 20h9"/>
+              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/>
+            </svg>
+            编辑 Markdown
+          </button>
           <a class="context-menu-item" :href="getFileUrl(focusedItem.key)" target="_blank" download @click="showContextMenu = false">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -287,6 +308,28 @@
 
     <!-- Toast -->
     <Toast ref="toast" />
+
+    <!-- File Preview -->
+    <FilePreview
+      v-model="showFilePreview"
+      :fileUrl="previewFileUrl"
+      :fetchUrl="previewFetchUrl"
+      :fileName="previewFileName"
+      :contentType="previewContentType"
+      :fileKey="previewFileKey"
+      :editable="!isReadonly"
+      @edit="handlePreviewEdit"
+    />
+
+    <!-- Markdown Editor -->
+    <MarkdownEditor
+      v-model="showMarkdownEditor"
+      :fileKey="markdownEditorFileKey"
+      :contentType="markdownEditorContentType"
+      :guestUploadPassword="guestUploadPassword"
+      @toast="handleToast"
+      @saved="handleMarkdownSaved"
+    />
   </div>
 </template>
 
@@ -303,6 +346,7 @@ import {
   getFileTypeForFile,
   parseSearchQuery,
 } from "/assets/search.mjs";
+import { encodePathForUrl } from "./url-utils.mjs";
 import Dialog from "./Dialog.vue";
 import Header from "./Header.vue";
 import StatsCards from "./StatsCards.vue";
@@ -314,9 +358,13 @@ import UploadPopup from "./UploadPopup.vue";
 import LoginDialog from "./LoginDialog.vue";
 import ShareDialog from "./ShareDialog.vue";
 import ShareListDialog from "./ShareListDialog.vue";
+import AdminTools from "./AdminTools.vue";
+import ApiKeyDialog from "./ApiKeyDialog.vue";
 import InputDialog from "./InputDialog.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import Toast from "./Toast.vue";
+import FilePreview from "./FilePreview.vue";
+import MarkdownEditor from "./MarkdownEditor.vue";
 
 export default {
   data: () => ({
@@ -371,6 +419,12 @@ export default {
     // Share List (admin)
     showShareListDialog: false,
 
+    // Admin Tools
+    showAdminTools: false,
+
+    // API Key Dialog
+    showApiKeyDialog: false,
+
     // Guest Upload Password
     guestUploadPassword: localStorage.getItem('guest_upload_password') || '',
 
@@ -397,6 +451,19 @@ export default {
       type: 'warning',
       callback: null,
     },
+
+    // File Preview
+    showFilePreview: false,
+    previewFileUrl: '',
+    previewFetchUrl: '',  // 用于 fetch 内容，避免 CORS
+    previewFileName: '',
+    previewContentType: '',
+    previewFileKey: '',
+
+    // Markdown Editor
+    showMarkdownEditor: false,
+    markdownEditorFileKey: '',
+    markdownEditorContentType: '',
   }),
 
   computed: {
@@ -608,13 +675,22 @@ export default {
       }
     },
 
+    getChildrenUrl(prefix) {
+      return `/api/children/${encodePathForUrl(prefix)}`;
+    },
+
+    getWriteItemUrl(key) {
+      return `/api/write/items/${encodePathForUrl(key)}`;
+    },
+
     getFileUrl(key) {
       // 如果配置了 fileBaseUrl（CDN 回源），直接使用
       // 否则使用 /raw/ 路由（通过 Pages Function 代理）
+      const encodedKey = encodePathForUrl(key);
       if (this.fileBaseUrl) {
-        return `${this.fileBaseUrl}/${key}`;
+        return `${this.fileBaseUrl}/${encodedKey}`;
       }
-      return `/raw/${key}`;
+      return `/raw/${encodedKey}`;
     },
 
     // Navigation
@@ -735,13 +811,13 @@ export default {
         type: 'danger',
         callback: async () => {
           this.batchLoading = true;
-          try {
-            for (const key of this.selectedItems) {
-              await axios.delete(`/api/write/items/${key}`);
-            }
-            this.clearSelection();
-            this.fetchFiles();
-            this.$refs.statsCards?.refresh();
+           try {
+             for (const key of this.selectedItems) {
+              await axios.delete(this.getWriteItemUrl(key));
+             }
+             this.clearSelection();
+             this.fetchFiles();
+             this.$refs.statsCards?.refresh();
             this.$refs.toast?.success('删除成功');
           } catch (error) {
             console.error('Batch delete failed:', error);
@@ -768,15 +844,15 @@ export default {
           const normalizedPath = targetPath === '' ? '' : (targetPath.endsWith('/') ? targetPath : targetPath + '/');
 
           this.batchLoading = true;
-          try {
-            for (const key of this.selectedItems) {
-              const fileName = key.split('/').pop();
-              const targetFilePath = normalizedPath + fileName;
-              await this.copyPaste(key, targetFilePath);
-              await axios.delete(`/api/write/items/${key}`);
-            }
-            this.clearSelection();
-            this.fetchFiles();
+           try {
+             for (const key of this.selectedItems) {
+               const fileName = key.split('/').pop();
+               const targetFilePath = normalizedPath + fileName;
+               await this.copyPaste(key, targetFilePath);
+              await axios.delete(this.getWriteItemUrl(key));
+             }
+             this.clearSelection();
+             this.fetchFiles();
           } catch (error) {
             console.error('Batch move failed:', error);
             this.$refs.toast?.error('批量移动失败');
@@ -847,7 +923,7 @@ export default {
     },
 
     async copyPaste(source, target) {
-      const uploadUrl = `/api/write/items/${target}`;
+      const uploadUrl = this.getWriteItemUrl(target);
       await axios.put(uploadUrl, "", {
         headers: { "x-amz-copy-source": encodeURIComponent(source) },
       });
@@ -863,9 +939,9 @@ export default {
         icon: 'folder',
         confirmText: '创建',
         callback: async (folderName) => {
-          if (!folderName) return;
-          try {
-            const uploadUrl = `/api/write/items/${this.cwd}${folderName}/_$folder$`;
+           if (!folderName) return;
+           try {
+            const uploadUrl = this.getWriteItemUrl(`${this.cwd}${folderName}/_$folder$`);
             await axios.put(uploadUrl, "");
             this.fetchFiles();
             this.$refs.statsCards?.refresh();
@@ -900,7 +976,7 @@ export default {
         headers['Authorization'] = `Basic ${credentials}`;
       }
 
-      return fetch(`/api/children/${this.cwd}`, { headers })
+      return fetch(this.getChildrenUrl(this.cwd), { headers })
         .then((res) => {
           if (!res.ok) throw new Error('获取文件列表失败');
           return res.json();
@@ -936,8 +1012,78 @@ export default {
       fileElement.value = null;
     },
 
-    preview(filePath) {
-      window.open(filePath);
+    preview(file) {
+      // 如果传入的是文件对象
+      if (typeof file === 'object') {
+        this.previewFileUrl = this.getFileUrl(file.key);
+        // fetchUrl 始终使用 /raw/ 路由，避免 CORS 问题
+        this.previewFetchUrl = `/raw/${encodePathForUrl(file.key)}`;
+        this.previewFileName = file.key?.split('/').pop() || '';
+        this.previewContentType = file.httpMetadata?.contentType || '';
+        this.previewFileKey = file.key || '';
+      } else {
+        // 兼容旧的字符串 URL 调用
+        this.previewFileUrl = file;
+        this.previewFetchUrl = file;
+        this.previewFileName = file.split('/').pop() || '';
+        this.previewContentType = '';
+        this.previewFileKey = '';
+      }
+      this.showFilePreview = true;
+    },
+
+    isMarkdownFile(file) {
+      if (!file || typeof file !== 'object') return false;
+      const ext = getFileExtension(file.key);
+      return ['md', 'markdown', 'mdown', 'mkd'].includes(ext);
+    },
+
+    openMarkdownEditor(fileKey, contentType = '') {
+      if (!fileKey) return;
+      if (this.isReadonly) {
+        this.$refs.toast?.error('只读模式无法编辑');
+        return;
+      }
+
+      // 访客写入复用上传密码逻辑
+      if (this.currentUser?.isGuest && !this.guestUploadPassword) {
+        this.showInput({
+          title: '访客写入验证',
+          description: '请输入上传密码',
+          placeholder: '请输入密码',
+          hint: '访客写入需要提供密码验证',
+          icon: 'folder',
+          confirmText: '确认',
+          callback: (password) => {
+            if (!password) return;
+            this.guestUploadPassword = password;
+            localStorage.setItem('guest_upload_password', password);
+            this.openMarkdownEditor(fileKey, contentType);
+          }
+        });
+        return;
+      }
+
+      this.markdownEditorFileKey = fileKey;
+      this.markdownEditorContentType = contentType || '';
+      this.showMarkdownEditor = true;
+    },
+
+    editFocusedMarkdown() {
+      if (!this.focusedItem || typeof this.focusedItem !== 'object') return;
+      this.openMarkdownEditor(this.focusedItem.key, this.focusedItem.httpMetadata?.contentType || '');
+      this.showContextMenu = false;
+    },
+
+    handlePreviewEdit({ fileKey, contentType }) {
+      if (!fileKey) return;
+      this.showFilePreview = false;
+      this.openMarkdownEditor(fileKey, contentType || '');
+    },
+
+    handleMarkdownSaved() {
+      this.fetchFiles();
+      this.$refs.statsCards?.refresh();
     },
 
     async processUploadQueue() {
@@ -953,12 +1099,14 @@ export default {
 
       if (file.type.startsWith("image/") || file.type === "video/mp4") {
         try {
-          const thumbnailBlob = await generateThumbnail(file);
-          const digestHex = await blobDigest(thumbnailBlob);
+           const thumbnailBlob = await generateThumbnail(file);
+           const digestHex = await blobDigest(thumbnailBlob);
 
-          const thumbnailUploadUrl = `/api/write/items/_$flaredrive$/thumbnails/${digestHex}.png`;
+          const thumbnailUploadUrl = this.getWriteItemUrl(`_$flaredrive$/thumbnails/${digestHex}.png`);
           try {
-            await axios.put(thumbnailUploadUrl, thumbnailBlob);
+            await axios.put(thumbnailUploadUrl, thumbnailBlob, {
+              headers: { 'Content-Type': 'image/png' }
+            });
             thumbnailDigest = digestHex;
           } catch (error) {
             fetch("/api/write/")
@@ -974,7 +1122,7 @@ export default {
       }
 
       try {
-        const uploadUrl = `/api/write/items/${basedir}${file.name}`;
+        const uploadUrl = this.getWriteItemUrl(`${basedir}${file.name}`);
         const headers = {};
         const onUploadProgress = (progressEvent) => {
           var percentCompleted =
@@ -1022,7 +1170,7 @@ export default {
         type: 'danger',
         callback: async () => {
           try {
-            await axios.delete(`/api/write/items/${key}`);
+            await axios.delete(this.getWriteItemUrl(key));
             this.fetchFiles();
             this.$refs.statsCards?.refresh();
             this.$refs.toast?.success('删除成功');
@@ -1048,7 +1196,7 @@ export default {
           if (!newName || newName === currentName) return;
           try {
             await this.copyPaste(key, `${this.cwd}${newName}`);
-            await axios.delete(`/api/write/items/${key}`);
+            await axios.delete(this.getWriteItemUrl(key));
             this.fetchFiles();
           } catch (error) {
             console.error('Rename failed:', error);
@@ -1102,7 +1250,7 @@ export default {
 
               try {
                 await this.copyPaste(item.key, newItemPath);
-                await axios.delete(`/api/write/items/${item.key}`);
+                await axios.delete(this.getWriteItemUrl(item.key));
                 processedItems++;
                 this.uploadProgress = (processedItems / totalItems) * 100;
               } catch (error) {
@@ -1114,11 +1262,11 @@ export default {
             // 处理文件夹标记：尝试复制，如果不存在则创建新的
             try {
               await this.copyPaste(sourceMarker, targetMarker);
-              await axios.delete(`/api/write/items/${sourceMarker}`);
+              await axios.delete(this.getWriteItemUrl(sourceMarker));
             } catch (error) {
               // 源文件夹标记不存在，直接创建新的标记
               if (error.response?.status === 404) {
-                await axios.put(`/api/write/items/${targetMarker}`, '');
+                await axios.put(this.getWriteItemUrl(targetMarker), '');
               } else {
                 throw error;
               }
@@ -1168,7 +1316,7 @@ export default {
 
                 try {
                   await this.copyPaste(item.key, newPath);
-                  await axios.delete(`/api/write/items/${item.key}`);
+                  await axios.delete(this.getWriteItemUrl(item.key));
                   processedItems++;
                   this.uploadProgress = (processedItems / totalItems) * 100;
                 } catch (error) {
@@ -1178,12 +1326,12 @@ export default {
 
               const targetFolderPath = targetBasePath.slice(0, -1) + '_$folder$';
               await this.copyPaste(key, targetFolderPath);
-              await axios.delete(`/api/write/items/${key}`);
+              await axios.delete(this.getWriteItemUrl(key));
               this.uploadProgress = null;
             } else {
               const targetFilePath = normalizedPath + finalFileName;
               await this.copyPaste(key, targetFilePath);
-              await axios.delete(`/api/write/items/${key}`);
+              await axios.delete(this.getWriteItemUrl(key));
             }
 
             this.fetchFiles();
@@ -1241,7 +1389,7 @@ export default {
       const normalizedPrefix = prefix.endsWith('/') ? prefix : prefix + '/';
 
       do {
-        const url = new URL(`/api/children/${normalizedPrefix}`, window.location.origin);
+        const url = new URL(this.getChildrenUrl(normalizedPrefix), window.location.origin);
         if (marker) {
           url.searchParams.set('marker', marker);
         }
@@ -1376,9 +1524,13 @@ export default {
     LoginDialog,
     ShareDialog,
     ShareListDialog,
+    AdminTools,
+    ApiKeyDialog,
     InputDialog,
     ConfirmDialog,
     Toast,
+    FilePreview,
+    MarkdownEditor,
   },
 };
 </script>

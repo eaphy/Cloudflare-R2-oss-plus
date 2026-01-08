@@ -1,5 +1,5 @@
 import { notFound, parseBucketPath } from "@/utils/bucket";
-import {get_auth_status} from "@/utils/auth";
+import { getWriteAuthStatusAsync } from "@/utils/auth";
 
 export async function onRequestPostCreateMultipart(context) {
   const [bucket, path] = parseBucketPath(context);
@@ -48,6 +48,14 @@ export async function onRequestPostCompleteMultipart(context) {
 }
 
 export async function onRequestPost(context) {
+  const hasPermission = await getWriteAuthStatusAsync(context);
+  if (!hasPermission) {
+    return new Response(JSON.stringify({ error: "没有操作权限" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+    });
+  }
+
   const url = new URL(context.request.url);
   const searchParams = new URLSearchParams(url.search);
 
@@ -89,12 +97,13 @@ export async function onRequestPutMultipart(context) {
 }
 
 export async function onRequestPut(context) {
-  if(!get_auth_status(context)){
+  const hasPermission = await getWriteAuthStatusAsync(context);
+  if (!hasPermission) {
     return new Response(JSON.stringify({ error: "没有操作权限" }), {
         status: 401,
         headers: { "Content-Type": "application/json" },
     });
-   }
+  }
   const url = new URL(context.request.url);
 
   if (new URLSearchParams(url.search).has("uploadId")) {
@@ -116,12 +125,26 @@ export async function onRequestPut(context) {
     const sourceName = decodeURIComponent(
       request.headers.get("x-amz-copy-source")
     );
+    const hasThumbnailOverride = request.headers.has("fd-thumbnail");
+
+    // 优先使用后端原生 copy（避免大对象经由 Worker 中转）
+    if (!hasThumbnailOverride && typeof bucket.copyObject === "function") {
+      try {
+        await bucket.copyObject(sourceName, path);
+        return new Response(JSON.stringify({ key: path, size: 0, uploaded: new Date().toISOString() }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (e: any) {
+        if (e?.status === 404) return notFound();
+        throw e;
+      }
+    }
+
     const source = await bucket.get(sourceName);
     if (!source) return notFound();
     content = source.body;
     httpMetadata = source.httpMetadata;
-    if (source.customMetadata.thumbnail)
-      customMetadata.thumbnail = source.customMetadata.thumbnail;
+    if (source.customMetadata.thumbnail) customMetadata.thumbnail = source.customMetadata.thumbnail;
   }
 
   if (request.headers.has("fd-thumbnail"))
@@ -143,12 +166,13 @@ export async function onRequestPut(context) {
 }
 
 export async function onRequestDelete(context) {
-  if(!get_auth_status(context)){
+  const hasPermission = await getWriteAuthStatusAsync(context);
+  if (!hasPermission) {
     return new Response(JSON.stringify({ error: "没有操作权限" }), {
         status: 401,
         headers: { "Content-Type": "application/json" },
     });
-   }
+  }
   const [bucket, path] = parseBucketPath(context);
   if (!bucket) return notFound();
 

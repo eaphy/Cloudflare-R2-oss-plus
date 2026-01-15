@@ -80,7 +80,17 @@ function isFileAllowed(filePath: string, allowedPaths: string[], isAdmin: boolea
 }
 
 export async function onRequestGet(context) {
-  const [bucket, path] = parseBucketPath(context);
+  let bucket: any;
+  let path: string;
+  try {
+    [bucket, path] = await parseBucketPath(context);
+  } catch (error: any) {
+    console.error("parseBucketPath error:", error);
+    return new Response("Storage config error", {
+      status: 500,
+      headers: { "Content-Type": "text/plain" },
+    });
+  }
   if (!bucket || !path) return notFound();
 
   const hasS3Backend = typeof bucket.fetchObject === "function" || bucket?.backend === "s3";
@@ -132,8 +142,8 @@ export async function onRequestGet(context) {
           headers: forwardHeaders,
           method: context.request.method,
           redirect: "follow",
-          cache: "no-store",
-        })
+        }),
+        { cf: { cacheTtl: 0 } }
       );
     }
 

@@ -18,6 +18,7 @@
       @showShareList="showShareListDialog = true"
       @showAdminTools="showAdminTools = true"
       @showApiKeys="showApiKeyDialog = true"
+      @showActivityLog="showActivityLog = true"
     />
 
     <!-- Main Content -->
@@ -309,6 +310,9 @@
     <!-- Toast -->
     <Toast ref="toast" />
 
+    <!-- Activity Log -->
+    <ActivityLog ref="activityLog" v-model="showActivityLog" />
+
     <!-- File Preview -->
     <FilePreview
       v-model="showFilePreview"
@@ -365,6 +369,7 @@ import ConfirmDialog from "./ConfirmDialog.vue";
 import Toast from "./Toast.vue";
 import FilePreview from "./FilePreview.vue";
 import MarkdownEditor from "./MarkdownEditor.vue";
+import ActivityLog from "./ActivityLog.vue";
 
 export default {
   data: () => ({
@@ -424,6 +429,9 @@ export default {
 
     // API Key Dialog
     showApiKeyDialog: false,
+
+    // Activity Log
+    showActivityLog: false,
 
     // Guest Upload Password
     guestUploadPassword: localStorage.getItem('guest_upload_password') || '',
@@ -749,6 +757,8 @@ export default {
 
       // For single file, direct download
       if (this.selectedItems.length === 1 && !this.selectedItems[0].endsWith('_$folder$')) {
+        const fileName = this.selectedItems[0].split('/').pop();
+        this.$refs.activityLog?.add('download', `下载 "${fileName}"`, 'success');
         window.open(this.getFileUrl(this.selectedItems[0]), '_blank');
         return;
       }
@@ -758,6 +768,9 @@ export default {
         this.$refs.toast?.error('批量下载需要 JSZip 库支持，请刷新页面后重试');
         return;
       }
+
+      const count = this.selectedItems.length;
+      const logId = this.$refs.activityLog?.add('download', `批量下载 ${count} 个项目`, 'pending');
 
       this.batchLoading = true;
       try {
@@ -793,8 +806,10 @@ export default {
         a.click();
         URL.revokeObjectURL(url);
         this.clearSelection();
+        this.$refs.activityLog?.update(logId, 'success', `批量下载 ${count} 个项目成功`);
       } catch (error) {
         console.error('Batch download failed:', error);
+        this.$refs.activityLog?.update(logId, 'error', `批量下载失败`);
         this.$refs.toast?.error('批量下载失败');
       } finally {
         this.batchLoading = false;
@@ -811,6 +826,8 @@ export default {
         type: 'danger',
         callback: async () => {
           this.batchLoading = true;
+          const count = this.selectedItems.length;
+          const logId = this.$refs.activityLog?.add('delete', `批量删除 ${count} 个项目`, 'pending');
            try {
              for (const key of this.selectedItems) {
               await axios.delete(this.getWriteItemUrl(key));
@@ -818,9 +835,11 @@ export default {
              this.clearSelection();
              this.fetchFiles();
              this.$refs.statsCards?.refresh();
+            this.$refs.activityLog?.update(logId, 'success', `批量删除 ${count} 个项目成功`);
             this.$refs.toast?.success('删除成功');
           } catch (error) {
             console.error('Batch delete failed:', error);
+            this.$refs.activityLog?.update(logId, 'error', `批量删除失败`);
             this.$refs.toast?.error('批量删除失败');
           } finally {
             this.batchLoading = false;
@@ -842,6 +861,8 @@ export default {
         confirmText: '移动',
         callback: async (targetPath) => {
           const normalizedPath = targetPath === '' ? '' : (targetPath.endsWith('/') ? targetPath : targetPath + '/');
+          const count = this.selectedItems.length;
+          const logId = this.$refs.activityLog?.add('move', `批量移动 ${count} 个项目`, 'pending');
 
           this.batchLoading = true;
            try {
@@ -853,8 +874,11 @@ export default {
              }
              this.clearSelection();
              this.fetchFiles();
+             this.$refs.activityLog?.update(logId, 'success', `批量移动 ${count} 个项目成功`);
+             this.$refs.toast?.success('移动成功');
           } catch (error) {
             console.error('Batch move failed:', error);
+            this.$refs.activityLog?.update(logId, 'error', `批量移动失败`);
             this.$refs.toast?.error('批量移动失败');
           } finally {
             this.batchLoading = false;
@@ -940,18 +964,27 @@ export default {
         confirmText: '创建',
         callback: async (folderName) => {
            if (!folderName) return;
+           const logId = this.$refs.activityLog?.add('folder', `创建文件夹 "${folderName}"`, 'pending');
            try {
             const uploadUrl = this.getWriteItemUrl(`${this.cwd}${folderName}/_$folder$`);
             await axios.put(uploadUrl, "");
             this.fetchFiles();
             this.$refs.statsCards?.refresh();
+            this.$refs.activityLog?.update(logId, 'success', `创建文件夹 "${folderName}" 成功`);
+            this.$refs.toast?.success('文件夹创建成功');
           } catch (error) {
-            fetch("/api/write/")
-              .then((value) => {
-                if (value.redirected) window.location.href = value.url;
-              })
-              .catch(() => {});
-            console.log(`Create folder failed`);
+            const status = error.response?.status;
+            let errorMsg = '创建失败';
+            if (status === 401) {
+              errorMsg = '请先登录';
+            } else if (status === 403) {
+              errorMsg = '没有写入权限';
+            } else if (error.code === 'ERR_NETWORK' || !error.response) {
+              errorMsg = '网络连接异常';
+            }
+            this.$refs.activityLog?.update(logId, 'error', `创建文件夹 "${folderName}" 失败：${errorMsg}`);
+            this.$refs.toast?.error(`创建失败：${errorMsg}`);
+            console.log(`Create folder failed`, error);
           }
         }
       });
@@ -1109,17 +1142,16 @@ export default {
             });
             thumbnailDigest = digestHex;
           } catch (error) {
-            fetch("/api/write/")
-              .then((value) => {
-                if (value.redirected) window.location.href = value.url;
-              })
-              .catch(() => {});
+            // 缩略图上传失败不影响主文件上传，静默处理
             console.log(`Upload ${digestHex}.png failed`);
           }
         } catch (error) {
           console.log(`Generate thumbnail failed`);
         }
       }
+
+      // 添加上传日志（pending 状态）
+      const logId = this.$refs.activityLog?.add('upload', `上传 "${file.name}"`, 'pending');
 
       try {
         const uploadUrl = this.getWriteItemUrl(`${basedir}${file.name}`);
@@ -1142,18 +1174,40 @@ export default {
         } else {
           await axios.put(uploadUrl, file, { headers, onUploadProgress });
         }
+        // 上传成功
+        this.$refs.activityLog?.update(logId, 'success', `上传 "${file.name}" 成功`);
+        this.$refs.toast?.success(`"${file.name}" 上传成功`);
       } catch (error) {
-        // 如果是401错误，可能是密码错误，清除保存的密码
-        if (error.response?.status === 401 && this.currentUser?.isGuest) {
-          this.guestUploadPassword = '';
-          localStorage.removeItem('guest_upload_password');
-          this.$refs.toast?.error('上传密码错误，请重新输入');
+        const status = error.response?.status;
+        const fileName = file.name;
+        let errorMsg = '';
+
+        // 根据不同错误类型给出针对性提示
+        if (status === 401) {
+          if (this.currentUser?.isGuest) {
+            this.guestUploadPassword = '';
+            localStorage.removeItem('guest_upload_password');
+            errorMsg = '上传密码错误';
+          } else {
+            errorMsg = '登录已过期，请重新登录';
+          }
+        } else if (status === 403) {
+          errorMsg = '没有写入权限';
+        } else if (status === 404) {
+          errorMsg = '上传接口不存在';
+        } else if (status === 413) {
+          errorMsg = '文件超出大小限制';
+        } else if (status === 507) {
+          errorMsg = '存储空间不足';
+        } else if (error.code === 'ERR_NETWORK' || !error.response) {
+          errorMsg = '网络连接异常';
+        } else {
+          errorMsg = error.response?.data?.error || '服务器错误';
         }
-        fetch("/api/write/")
-          .then((value) => {
-            if (value.redirected) window.location.href = value.url;
-          })
-          .catch(() => {});
+
+        // 更新日志为失败状态
+        this.$refs.activityLog?.update(logId, 'error', `上传 "${fileName}" 失败：${errorMsg}`);
+        this.$refs.toast?.error(`"${fileName}" 上传失败：${errorMsg}`);
         console.log(`Upload ${file.name} failed`, error);
       }
       setTimeout(this.processUploadQueue);
@@ -1169,13 +1223,16 @@ export default {
         confirmText: '删除',
         type: 'danger',
         callback: async () => {
+          const logId = this.$refs.activityLog?.add('delete', `删除 "${fileName}"`, 'pending');
           try {
             await axios.delete(this.getWriteItemUrl(key));
             this.fetchFiles();
             this.$refs.statsCards?.refresh();
+            this.$refs.activityLog?.update(logId, 'success', `删除 "${fileName}" 成功`);
             this.$refs.toast?.success('删除成功');
           } catch (error) {
             console.error('Delete failed:', error);
+            this.$refs.activityLog?.update(logId, 'error', `删除 "${fileName}" 失败`);
             this.$refs.toast?.error('删除失败');
           }
         }
@@ -1194,12 +1251,15 @@ export default {
         confirmText: '重命名',
         callback: async (newName) => {
           if (!newName || newName === currentName) return;
+          const logId = this.$refs.activityLog?.add('rename', `重命名 "${currentName}" → "${newName}"`, 'pending');
           try {
             await this.copyPaste(key, `${this.cwd}${newName}`);
             await axios.delete(this.getWriteItemUrl(key));
             this.fetchFiles();
+            this.$refs.activityLog?.update(logId, 'success', `重命名 "${currentName}" → "${newName}" 成功`);
           } catch (error) {
             console.error('Rename failed:', error);
+            this.$refs.activityLog?.update(logId, 'error', `重命名 "${currentName}" 失败`);
             this.$refs.toast?.error('重命名失败');
           }
         }
@@ -1352,6 +1412,9 @@ export default {
       this.showContextMenu = false;
       this.batchLoading = true;
 
+      const folderName = folderPath.split('/').filter(Boolean).pop() || 'folder';
+      const logId = this.$refs.activityLog?.add('download', `下载文件夹 "${folderName}"`, 'pending');
+
       try {
         const zip = new JSZip();
         const items = await this.getAllItems(folderPath);
@@ -1365,7 +1428,6 @@ export default {
           }
         }
 
-        const folderName = folderPath.split('/').filter(Boolean).pop() || 'folder';
         const content = await zip.generateAsync({ type: 'blob' });
         const url = URL.createObjectURL(content);
         const a = document.createElement('a');
@@ -1373,8 +1435,10 @@ export default {
         a.download = `${folderName}.zip`;
         a.click();
         URL.revokeObjectURL(url);
+        this.$refs.activityLog?.update(logId, 'success', `下载文件夹 "${folderName}" 成功`);
       } catch (error) {
         console.error('Download folder failed:', error);
+        this.$refs.activityLog?.update(logId, 'error', `下载文件夹 "${folderName}" 失败`);
         this.$refs.toast?.error('文件夹下载失败');
       } finally {
         this.batchLoading = false;
@@ -1531,6 +1595,7 @@ export default {
     Toast,
     FilePreview,
     MarkdownEditor,
+    ActivityLog,
   },
 };
 </script>

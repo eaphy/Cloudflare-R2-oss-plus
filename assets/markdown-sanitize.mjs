@@ -8,8 +8,11 @@ export function escapeHtml(value) {
 }
 
 export function sanitizeLinkHref(href) {
-  const raw = String(href ?? "").trim();
+  let raw = String(href ?? "").trim();
   if (!raw) return null;
+
+  // Normalize backslashes to forward slashes for Windows path compatibility
+  raw = raw.replace(/\\/g, "/");
 
   // Disallow protocol-relative URLs (e.g. //evil.com) and Windows UNC-like paths
   if (raw.startsWith("//") || raw.startsWith("\\\\")) return null;
@@ -19,25 +22,15 @@ export function sanitizeLinkHref(href) {
     return null;
   }
 
-  if (
-    lower.startsWith("http://") ||
-    lower.startsWith("https://") ||
-    lower.startsWith("mailto:") ||
-    lower.startsWith("tel:") ||
-    raw.startsWith("#") ||
-    raw.startsWith("/") ||
-    raw.startsWith("./") ||
-    raw.startsWith("../")
-  ) {
-    return raw;
-  }
-
-  return null;
+  return raw;
 }
 
 export function sanitizeImageSrc(src) {
-  const raw = String(src ?? "").trim();
+  let raw = String(src ?? "").trim();
   if (!raw) return null;
+
+  // Normalize backslashes to forward slashes for Windows path compatibility
+  raw = raw.replace(/\\/g, "/");
 
   // Disallow protocol-relative URLs (e.g. //evil.com) and Windows UNC-like paths
   if (raw.startsWith("//") || raw.startsWith("\\\\")) return null;
@@ -47,17 +40,7 @@ export function sanitizeImageSrc(src) {
     return null;
   }
 
-  if (
-    lower.startsWith("http://") ||
-    lower.startsWith("https://") ||
-    raw.startsWith("/") ||
-    raw.startsWith("./") ||
-    raw.startsWith("../")
-  ) {
-    return raw;
-  }
-
-  return null;
+  return raw;
 }
 
 export function sanitizeHtmlFragment(html) {

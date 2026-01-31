@@ -19,6 +19,7 @@
       @showAdminTools="showAdminTools = true"
       @showApiKeys="showApiKeyDialog = true"
       @showActivityLog="showActivityLog = true"
+      @showUploadSettings="openUploadSettings"
     />
 
     <!-- Main Content -->
@@ -139,6 +140,77 @@
       @createFolder="createFolder"
     />
 
+    <!-- Upload Settings Dialog -->
+    <Dialog v-model="showUploadSettings">
+      <div class="upload-settings-dialog">
+        <div class="upload-settings-header">
+          <h3>上传参数</h3>
+          <p>提高并发与分片大小可加速上传，但弱网更容易失败</p>
+        </div>
+        <div class="upload-settings-body">
+          <label class="upload-settings-row">
+            <span>分片大小</span>
+            <select v-model.number="uploadSettingsDraft.chunkSizeMb" class="upload-settings-select">
+              <option :value="20">20MB</option>
+              <option :value="40">40MB</option>
+              <option :value="60">60MB</option>
+              <option :value="80">80MB</option>
+              <option :value="100">100MB</option>
+              <option :value="120">120MB</option>
+            </select>
+          </label>
+          <label class="upload-settings-row">
+            <span>并发数</span>
+            <select v-model.number="uploadSettingsDraft.concurrency" class="upload-settings-select">
+              <option :value="1">1</option>
+              <option :value="2">2</option>
+              <option :value="3">3</option>
+              <option :value="4">4</option>
+            </select>
+          </label>
+          <label class="upload-settings-row">
+            <span>重试次数</span>
+            <select v-model.number="uploadSettingsDraft.retries" class="upload-settings-select">
+              <option :value="0">0</option>
+              <option :value="1">1</option>
+              <option :value="2">2</option>
+              <option :value="3">3</option>
+              <option :value="4">4</option>
+              <option :value="5">5</option>
+            </select>
+          </label>
+          <label class="upload-settings-row upload-settings-toggle">
+            <span>自动续传</span>
+            <input type="checkbox" v-model="uploadSettingsDraft.autoResume" />
+          </label>
+          <div v-if="uploadResumeList.length" class="upload-settings-resume">
+            <div class="upload-settings-resume-title">未完成上传</div>
+            <div class="upload-settings-resume-list">
+              <div v-for="item in uploadResumeList" :key="item.key" class="upload-settings-resume-item">
+                <div class="upload-settings-resume-info">
+                  <div class="upload-settings-resume-name">{{ item.name }}</div>
+                  <div class="upload-settings-resume-meta">{{ item.progressText }}</div>
+                </div>
+                <div class="upload-settings-resume-actions">
+                  <button class="upload-settings-btn ghost" @click="resumeUploadFromSettings(item)">继续</button>
+                  <button class="upload-settings-btn secondary" @click="removeResumeRecord(item.key)">移除</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="upload-settings-footer">
+          <button class="upload-settings-btn secondary" @click="resetUploadSettings">
+            恢复默认
+          </button>
+          <div class="upload-settings-actions">
+            <button class="upload-settings-btn ghost" @click="showUploadSettings = false">取消</button>
+            <button class="upload-settings-btn primary" @click="saveUploadSettings">保存</button>
+          </div>
+        </div>
+      </div>
+    </Dialog>
+
     <!-- Login Dialog -->
     <LoginDialog
       v-model="showLoginDialog"
@@ -198,6 +270,7 @@
       :cancelText="confirmDialogConfig.cancelText"
       :type="confirmDialogConfig.type"
       @confirm="handleConfirmDialogConfirm"
+      @cancel="handleConfirmDialogCancel"
     />
 
     <!-- Context Menu Dialog -->
@@ -407,6 +480,20 @@ export default {
     showUploadPopup: false,
     uploadProgress: null,
     uploadQueue: [],
+    uploadResumeInfo: {},
+    uploadConfig: {
+      chunkSizeMb: 80,
+      concurrency: 3,
+      retries: 3,
+      autoResume: false,
+    },
+    showUploadSettings: false,
+    uploadSettingsDraft: {
+      chunkSizeMb: 80,
+      concurrency: 3,
+      retries: 3,
+      autoResume: false,
+    },
 
     // Auth
     showLoginDialog: false,
@@ -458,6 +545,7 @@ export default {
       cancelText: '取消',
       type: 'warning',
       callback: null,
+      cancelCallback: null,
     },
 
     // File Preview
@@ -549,6 +637,22 @@ export default {
         return this.sortOrder === 'asc' ? comparison : -comparison;
       });
       return folders;
+    },
+
+    uploadResumeList() {
+      return Object.entries(this.uploadResumeInfo || {})
+        .map(([key, info]) => {
+          const done = Array.isArray(info.uploadedParts) ? info.uploadedParts.length : 0;
+          const total = info.totalChunks || 0;
+          const progressText = total ? `${done}/${total}` : `${done}`;
+          return {
+            key,
+            name: info.fileName || key,
+            progressText,
+            info,
+          };
+        })
+        .sort((a, b) => (b.info.updatedAt || 0) - (a.info.updatedAt || 0));
     },
 
     focusedItemName() {
@@ -936,6 +1040,7 @@ export default {
         cancelText: config.cancelText || '取消',
         type: config.type || 'warning',
         callback: config.callback || null,
+        cancelCallback: config.cancelCallback || null,
       };
       this.showConfirmDialog = true;
     },
@@ -943,6 +1048,12 @@ export default {
     handleConfirmDialogConfirm() {
       if (this.confirmDialogConfig.callback) {
         this.confirmDialogConfig.callback();
+      }
+    },
+
+    handleConfirmDialogCancel() {
+      if (this.confirmDialogConfig.cancelCallback) {
+        this.confirmDialogConfig.cancelCallback();
       }
     },
 
@@ -1127,7 +1238,12 @@ export default {
         return;
       }
 
-      const { basedir, file } = this.uploadQueue.pop(0);
+      const { basedir, file, resume: taskResume } = this.uploadQueue.pop(0);
+      const uploadKey = this.getUploadResumeKey(file, basedir);
+      const chunkSizeBytes = this.getUploadChunkSizeBytes();
+      const resumeInfo = taskResume && taskResume.chunkSize === chunkSizeBytes
+        ? taskResume
+        : (this.uploadResumeInfo[uploadKey]?.chunkSize === chunkSizeBytes ? this.uploadResumeInfo[uploadKey] : null);
       let thumbnailDigest = null;
 
       if (file.type.startsWith("image/") || file.type === "video/mp4") {
@@ -1151,13 +1267,45 @@ export default {
       }
 
       // 添加上传日志（pending 状态）
-      const logId = this.$refs.activityLog?.add('upload', `上传 "${file.name}"`, 'pending');
+      const logId = resumeInfo?.logId || this.$refs.activityLog?.add('upload', `上传 "${file.name}"`, 'pending');
+      if (resumeInfo?.logId) {
+        const doneParts = Array.isArray(resumeInfo.uploadedParts) ? resumeInfo.uploadedParts.length : 0;
+        const totalParts = resumeInfo.totalChunks || Math.ceil(file.size / chunkSizeBytes);
+        this.$refs.activityLog?.update(logId, 'pending', `继续上传 "${file.name}" (${doneParts}/${totalParts})`);
+      }
 
       try {
         const uploadUrl = this.getWriteItemUrl(`${basedir}${file.name}`);
         const headers = {};
+        let multipartProgress = null;
+        if (file.size >= chunkSizeBytes) {
+          const totalChunks = Math.ceil(file.size / chunkSizeBytes);
+          const partLoaded = {};
+          if (resumeInfo?.uploadedParts?.length) {
+            for (const part of resumeInfo.uploadedParts) {
+              const partSize = this.getMultipartPartSize(
+                part.partNumber,
+                totalChunks,
+                chunkSizeBytes,
+                file.size
+              );
+              partLoaded[part.partNumber] = partSize;
+            }
+          }
+          multipartProgress = { partLoaded, totalChunks };
+        }
         const onUploadProgress = (progressEvent) => {
-          var percentCompleted =
+          if (multipartProgress && progressEvent.partNumber) {
+            multipartProgress.partLoaded[progressEvent.partNumber] = progressEvent.partLoaded;
+            const loaded = Object.values(multipartProgress.partLoaded).reduce(
+              (sum, value) => sum + value,
+              0
+            );
+            const percentCompleted = (loaded * 100) / progressEvent.total;
+            this.uploadProgress = Math.min(100, Math.max(0, percentCompleted));
+            return;
+          }
+          const percentCompleted =
             (progressEvent.loaded * 100) / progressEvent.total;
           this.uploadProgress = percentCompleted;
         };
@@ -1166,18 +1314,62 @@ export default {
         if (this.currentUser?.isGuest && this.guestUploadPassword) {
           headers["X-Guest-Password"] = this.guestUploadPassword;
         }
-        if (file.size >= SIZE_LIMIT) {
+        if (file.size >= chunkSizeBytes) {
           await multipartUpload(`${basedir}${file.name}`, file, {
             headers,
             onUploadProgress,
+            retries: this.uploadConfig.retries,
+            retryDelayMs: 800,
+            concurrency: this.uploadConfig.concurrency,
+            chunkSize: chunkSizeBytes,
+            resume: resumeInfo,
           });
         } else {
           await axios.put(uploadUrl, file, { headers, onUploadProgress });
+        }
+        if (this.uploadResumeInfo[uploadKey]) {
+          delete this.uploadResumeInfo[uploadKey];
+          this.persistUploadResumeInfo();
         }
         // 上传成功
         this.$refs.activityLog?.update(logId, 'success', `上传 "${file.name}" 成功`);
         this.$refs.toast?.success(`"${file.name}" 上传成功`);
       } catch (error) {
+        if (error?.isMultipartUpload) {
+          const uploadedParts = Array.isArray(error.uploadedParts) ? error.uploadedParts : [];
+          const totalChunks = error.totalChunks || Math.ceil(file.size / chunkSizeBytes);
+          this.uploadResumeInfo[uploadKey] = {
+            uploadId: error.uploadId,
+            uploadedParts,
+            totalChunks,
+            logId,
+            chunkSize: chunkSizeBytes,
+            updatedAt: Date.now(),
+            fileName: file.name,
+            fileSize: file.size,
+            lastModified: file.lastModified,
+          };
+          this.persistUploadResumeInfo();
+
+          const doneCount = uploadedParts.length;
+          const message = `上传 "${file.name}" 失败：网络波动（已完成 ${doneCount}/${totalChunks}）`;
+          this.$refs.activityLog?.update(logId, 'error', message);
+          this.$refs.toast?.error(`"${file.name}" 上传中断，可续传`);
+
+          this.showConfirm({
+            title: '上传中断',
+            message: `"${file.name}" 已完成 ${doneCount}/${totalChunks}，是否继续上传？`,
+            confirmText: '继续上传',
+            cancelText: '稍后',
+            type: 'warning',
+            callback: () => {
+              this.uploadQueue.unshift({ basedir, file, resume: this.uploadResumeInfo[uploadKey] });
+              setTimeout(() => this.processUploadQueue());
+            }
+          });
+          setTimeout(this.processUploadQueue);
+          return;
+        }
         const status = error.response?.status;
         const fileName = file.name;
         let errorMsg = '';
@@ -1521,9 +1713,157 @@ export default {
         basedir: this.cwd,
         file,
       }));
-      this.uploadQueue.push(...uploadTasks);
+      uploadTasks.forEach((task) => {
+        const resume = this.getResumeInfoForFile(task.file, task.basedir);
+        if (resume && !this.uploadConfig.autoResume) {
+          this.showConfirm({
+            title: '检测到未完成上传',
+            message: `"${task.file.name}" 有未完成上传，是否继续？`,
+            confirmText: '继续上传',
+            cancelText: '重新开始',
+            type: 'info',
+            callback: () => {
+              this.enqueueUploadTask({ ...task, resume });
+            },
+            cancelCallback: () => {
+              this.clearUploadResumeInfo(task.file, task.basedir);
+              this.enqueueUploadTask(task);
+            },
+          });
+        } else {
+          this.enqueueUploadTask({ ...task, resume });
+        }
+      });
+    },
+
+    getUploadResumeKey(file, basedir) {
+      const safeBase = basedir || '';
+      return `${safeBase}${file.name}:${file.size}:${file.lastModified}`;
+    },
+
+    getUploadChunkSizeBytes() {
+      const size = Number(this.uploadConfig.chunkSizeMb) || 80;
+      return Math.max(20, size) * 1024 * 1024;
+    },
+
+    getMultipartPartSize(partNumber, totalChunks, chunkSize, fileSize) {
+      if (partNumber === totalChunks) {
+        return fileSize - chunkSize * (totalChunks - 1);
+      }
+      return chunkSize;
+    },
+
+    getResumeInfoForFile(file, basedir) {
+      const key = this.getUploadResumeKey(file, basedir);
+      const chunkSizeBytes = this.getUploadChunkSizeBytes();
+      const resumeInfo = this.uploadResumeInfo[key];
+      if (!resumeInfo || resumeInfo.chunkSize !== chunkSizeBytes) return null;
+      if (this.isResumeInfoExpired(resumeInfo)) {
+        delete this.uploadResumeInfo[key];
+        this.persistUploadResumeInfo();
+        return null;
+      }
+      return resumeInfo;
+    },
+
+    enqueueUploadTask(task) {
+      this.uploadQueue.push(task);
       setTimeout(() => this.processUploadQueue());
     },
+
+    clearUploadResumeInfo(file, basedir) {
+      const key = this.getUploadResumeKey(file, basedir);
+      if (this.uploadResumeInfo[key]) {
+        delete this.uploadResumeInfo[key];
+        this.persistUploadResumeInfo();
+      }
+    },
+
+    removeResumeRecord(key) {
+      if (this.uploadResumeInfo[key]) {
+        delete this.uploadResumeInfo[key];
+        this.persistUploadResumeInfo();
+      }
+    },
+
+    resumeUploadFromSettings(item) {
+      this.showUploadSettings = false;
+      this.showUploadPopup = true;
+      this.$refs.toast?.info?.('请选择相同文件以继续上传');
+    },
+
+    isResumeInfoExpired(resumeInfo) {
+      const maxAgeMs = 48 * 60 * 60 * 1000;
+      const updatedAt = resumeInfo.updatedAt || 0;
+      return Date.now() - updatedAt > maxAgeMs;
+    },
+
+    persistUploadResumeInfo() {
+      try {
+        const data = Object.fromEntries(
+          Object.entries(this.uploadResumeInfo).map(([key, info]) => {
+            const { uploadId, uploadedParts, totalChunks, chunkSize, updatedAt, fileName, fileSize, lastModified } = info;
+            return [key, { uploadId, uploadedParts, totalChunks, chunkSize, updatedAt, fileName, fileSize, lastModified }];
+          })
+        );
+        localStorage.setItem('upload_resume_info', JSON.stringify(data));
+      } catch (error) {
+        console.log('Upload resume info save failed');
+      }
+    },
+
+    loadUploadResumeInfo() {
+      const saved = localStorage.getItem('upload_resume_info');
+      if (!saved) return;
+      try {
+        const parsed = JSON.parse(saved);
+        if (!parsed || typeof parsed !== 'object') return;
+        this.uploadResumeInfo = parsed;
+        this.pruneUploadResumeInfo();
+      } catch (error) {
+        console.log('Upload resume info parse failed');
+      }
+    },
+
+    pruneUploadResumeInfo() {
+      const next = {};
+      for (const [key, info] of Object.entries(this.uploadResumeInfo || {})) {
+        if (!this.isResumeInfoExpired(info)) {
+          next[key] = info;
+        }
+      }
+      this.uploadResumeInfo = next;
+      this.persistUploadResumeInfo();
+    },
+
+    updateUploadConfig(config) {
+      this.uploadConfig = this.normalizeUploadConfig({ ...this.uploadConfig, ...config });
+      localStorage.setItem('upload_config', JSON.stringify(this.uploadConfig));
+    },
+
+    normalizeUploadConfig(config) {
+      const chunkSizeMb = Math.min(120, Math.max(20, Number(config.chunkSizeMb) || 80));
+      const concurrency = Math.min(4, Math.max(1, Number(config.concurrency) || 3));
+      const retries = Math.min(5, Math.max(0, Number(config.retries) || 3));
+      const autoResume = Boolean(config.autoResume);
+      return { chunkSizeMb, concurrency, retries, autoResume };
+    },
+
+    openUploadSettings() {
+      this.uploadSettingsDraft = { ...this.uploadConfig };
+      this.showUploadSettings = true;
+    },
+
+    saveUploadSettings() {
+      this.updateUploadConfig(this.uploadSettingsDraft);
+      this.showUploadSettings = false;
+      this.$refs.toast?.success('上传参数已更新');
+    },
+
+    resetUploadSettings() {
+      this.uploadSettingsDraft = { chunkSizeMb: 80, concurrency: 3, retries: 3, autoResume: false };
+    },
+
   },
 
   watch: {
@@ -1554,6 +1894,18 @@ export default {
 
     // Load config (file base URL for CDN)
     this.loadConfig();
+
+    const savedUploadConfig = localStorage.getItem('upload_config');
+    if (savedUploadConfig) {
+      try {
+        const parsed = JSON.parse(savedUploadConfig);
+        this.uploadConfig = this.normalizeUploadConfig({ ...this.uploadConfig, ...parsed });
+      } catch (error) {
+        console.log('Upload config parse failed');
+      }
+    }
+
+    this.loadUploadResumeInfo();
 
     // Restore auth state, show login if not restored
     const restored = this.restoreAuth();
@@ -1646,6 +1998,200 @@ export default {
 
 .context-menu-item.danger {
   color: var(--error-color);
+}
+
+/* Upload Settings Dialog */
+.upload-settings-dialog {
+  width: min(520px, 100%);
+  background: var(--card-bg);
+}
+
+.upload-settings-header {
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--divider-color);
+}
+
+.upload-settings-header h3 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+
+.upload-settings-header p {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.upload-settings-body {
+  padding: 20px 24px;
+  display: grid;
+  gap: 14px;
+}
+
+.upload-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.upload-settings-toggle {
+  padding-top: 8px;
+  border-top: 1px dashed var(--divider-color);
+}
+
+.upload-settings-toggle input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+}
+
+.upload-settings-resume {
+  border-top: 1px dashed var(--divider-color);
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.upload-settings-resume-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.upload-settings-resume-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.upload-settings-resume-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+}
+
+.upload-settings-resume-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.upload-settings-resume-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.upload-settings-resume-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.upload-settings-resume-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.upload-settings-select {
+  min-width: 140px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.upload-settings-footer {
+  padding: 16px 24px 20px;
+  border-top: 1px solid var(--divider-color);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.upload-settings-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.upload-settings-btn {
+  padding: 8px 16px;
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  font-weight: 500;
+  transition: var(--transition);
+}
+
+.upload-settings-btn.primary {
+  background: var(--primary-gradient);
+  color: white;
+}
+
+.upload-settings-btn.primary:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+}
+
+.upload-settings-btn.secondary {
+  background: var(--hover-bg);
+  color: var(--text-secondary);
+}
+
+.upload-settings-btn.secondary:hover {
+  background: var(--bg-secondary);
+}
+
+.upload-settings-btn.ghost {
+  color: var(--text-secondary);
+}
+
+.upload-settings-btn.ghost:hover {
+  color: var(--text-primary);
+  background: var(--hover-bg);
+}
+
+@media (max-width: 640px) {
+  .upload-settings-header,
+  .upload-settings-body,
+  .upload-settings-footer {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .upload-settings-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .upload-settings-select {
+    width: 100%;
+  }
+
+  .upload-settings-footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .upload-settings-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
 }
 
 .context-menu-item svg {
